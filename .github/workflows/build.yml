@@ -1,4 +1,4 @@
-name: Build PHP for Windows (Official Builder)
+name: Build PHP for Windows
 
 on:
   workflow_dispatch:
@@ -199,22 +199,43 @@ jobs:
           $ARCH = "${{ github.event.inputs.arch }}"
           $TS = "${{ github.event.inputs.thread_safe }}"
 
-          # 生成包名
-          $PACKAGE_NAME = "php-$PHP_VERSION-$TS-Win-$ARCH"
+          # 生成包名（基础包：php-{version}-windows-{arch}-no-extensions）
+          $PACKAGE_NAME = "php-$PHP_VERSION-windows-$ARCH-no-extensions"
 
-          Write-Host "Creating package: $PACKAGE_NAME"
+          Write-Host "Creating packages: $PACKAGE_NAME (no extensions)"
+          Write-Host "Thread Safety: $TS"
 
           # artifacts 目录已经由官方 action 创建
           if (Test-Path "artifacts") {
-            # 压缩为 ZIP
-            Compress-Archive -Path "artifacts\*" -DestinationPath "$PACKAGE_NAME.zip" -Force
+            # 使用 7-Zip 生成 ZIP 格式（确保路径使用正斜杠）
+            Write-Host "Creating ZIP package..."
+            & "C:\Program Files\7-Zip\7z.exe" a -tzip "$PACKAGE_NAME.zip" ".\artifacts\*"
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "Error: Failed to create ZIP package"
+              exit 1
+            }
 
-            # 生成 SHA256
-            $hash = (Get-FileHash -Path "$PACKAGE_NAME.zip" -Algorithm SHA256).Hash
-            "$hash  $PACKAGE_NAME.zip" | Out-File -FilePath "$PACKAGE_NAME.sha256" -Encoding ASCII
+            # 生成 ZIP 的 SHA256
+            $zipHash = (Get-FileHash -Path "$PACKAGE_NAME.zip" -Algorithm SHA256).Hash
+            "$zipHash  $PACKAGE_NAME.zip" | Out-File -FilePath "$PACKAGE_NAME.zip.sha256" -Encoding ASCII
+            Write-Host "ZIP package created: $PACKAGE_NAME.zip"
+            Write-Host "  Size: $([math]::Round((Get-Item $PACKAGE_NAME.zip).Length / 1MB, 2)) MB"
+            Write-Host "  SHA256: $zipHash"
 
-            Write-Host "Package created: $PACKAGE_NAME.zip"
-            Write-Host "SHA256: $hash"
+            # 使用 7-Zip 生成 7Z 格式（更高压缩率）
+            Write-Host "`nCreating 7Z package..."
+            & "C:\Program Files\7-Zip\7z.exe" a -t7z -m0=lzma2 -mx=9 -mmt=on "$PACKAGE_NAME.7z" ".\artifacts\*"
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "Error: Failed to create 7Z package"
+              exit 1
+            }
+
+            # 生成 7Z 的 SHA256
+            $7zHash = (Get-FileHash -Path "$PACKAGE_NAME.7z" -Algorithm SHA256).Hash
+            "$7zHash  $PACKAGE_NAME.7z" | Out-File -FilePath "$PACKAGE_NAME.7z.sha256" -Encoding ASCII
+            Write-Host "7Z package created: $PACKAGE_NAME.7z"
+            Write-Host "  Size: $([math]::Round((Get-Item "$PACKAGE_NAME.7z").Length / 1MB, 2)) MB"
+            Write-Host "  SHA256: $7zHash"
 
             # 保存包名供后续使用
             echo "PACKAGE_NAME=$PACKAGE_NAME" >> $env:GITHUB_ENV
@@ -229,7 +250,9 @@ jobs:
           name: ${{ env.PACKAGE_NAME }}
           path: |
             ${{ env.PACKAGE_NAME }}.zip
-            ${{ env.PACKAGE_NAME }}.sha256
+            ${{ env.PACKAGE_NAME }}.zip.sha256
+            ${{ env.PACKAGE_NAME }}.7z
+            ${{ env.PACKAGE_NAME }}.7z.sha256
           retention-days: 90
 
       - name: Upload PHP Build Artifacts (for extension building)
@@ -818,7 +841,10 @@ jobs:
             Write-Host "  [$type] $($_.Name)"
           }
 
-          $packageName = "${{ needs.prepare.outputs.package-name }}-complete"
+          # 构造完整包名（完整包：php-{version}-windows-{arch}）
+          $PHP_VERSION = "${{ needs.prepare.outputs.php-version }}"
+          $ARCH = "${{ github.event.inputs.arch }}"
+          $packageName = "php-$PHP_VERSION-windows-$ARCH"
           $phpRoot = "php"
 
           # 验证 PHP 目录
@@ -853,33 +879,49 @@ jobs:
             Write-Host "  Config files: $($configFiles.Count)"
           }
 
-          # 创建 ZIP 包
-          Add-Type -Assembly "System.IO.Compression.Filesystem"
-          $zipPath = "$packageName.zip"
-
-          if (Test-Path $zipPath) {
-            Remove-Item $zipPath -Force
+          # 使用 7-Zip 生成 ZIP 格式（确保路径使用正斜杠）
+          Write-Host "`nCreating ZIP package..."
+          & "C:\Program Files\7-Zip\7z.exe" a -tzip "$packageName.zip" ".\$phpRoot\*"
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "ERROR: Failed to create ZIP package"
+            exit 1
           }
 
-          Write-Host "`nCreating ZIP package..."
-          [System.IO.Compression.ZipFile]::CreateFromDirectory($phpRoot, $zipPath, [System.IO.Compression.CompressionLevel]::Optimal, $false)
+          $zipSizeInMB = [math]::Round((Get-Item "$packageName.zip").Length / 1MB, 2)
+          Write-Host "[OK] ZIP package created: $packageName.zip"
+          Write-Host "  Size: $zipSizeInMB MB"
 
-          $sizeInMB = [math]::Round((Get-Item $zipPath).Length / 1MB, 2)
-          Write-Host "[OK] Package created: $zipPath"
-          Write-Host "  Size: $sizeInMB MB"
+          # 生成 ZIP 的 SHA256
+          $zipHash = (Get-FileHash -Path "$packageName.zip" -Algorithm SHA256).Hash
+          "$zipHash  $packageName.zip" | Out-File -FilePath "$packageName.zip.sha256" -Encoding ASCII
+          Write-Host "  SHA256: $zipHash"
 
-          # 生成 SHA256
-          $hash = (Get-FileHash -Path $zipPath -Algorithm SHA256).Hash
-          Set-Content -Path "$packageName.sha256" -Value $hash
-          Write-Host "  SHA256: $hash"
+          # 使用 7-Zip 生成 7Z 格式（更高压缩率）
+          Write-Host "`nCreating 7Z package..."
+          & "C:\Program Files\7-Zip\7z.exe" a -t7z -m0=lzma2 -mx=9 -mmt=on "$packageName.7z" ".\$phpRoot\*"
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "ERROR: Failed to create 7Z package"
+            exit 1
+          }
+
+          $7zSizeInMB = [math]::Round((Get-Item "$packageName.7z").Length / 1MB, 2)
+          Write-Host "[OK] 7Z package created: $packageName.7z"
+          Write-Host "  Size: $7zSizeInMB MB"
+
+          # 生成 7Z 的 SHA256
+          $7zHash = (Get-FileHash -Path "$packageName.7z" -Algorithm SHA256).Hash
+          "$7zHash  $packageName.7z" | Out-File -FilePath "$packageName.7z.sha256" -Encoding ASCII
+          Write-Host "  SHA256: $7zHash"
 
       - name: Upload Complete PHP Package
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ needs.prepare.outputs.package-name }}-complete
+          name: php-${{ needs.prepare.outputs.php-version }}-windows-${{ github.event.inputs.arch }}
           path: |
-            ${{ needs.prepare.outputs.package-name }}-complete.zip
-            ${{ needs.prepare.outputs.package-name }}-complete.sha256
+            php-${{ needs.prepare.outputs.php-version }}-windows-${{ github.event.inputs.arch }}.zip
+            php-${{ needs.prepare.outputs.php-version }}-windows-${{ github.event.inputs.arch }}.zip.sha256
+            php-${{ needs.prepare.outputs.php-version }}-windows-${{ github.event.inputs.arch }}.7z
+            php-${{ needs.prepare.outputs.php-version }}-windows-${{ github.event.inputs.arch }}.7z.sha256
           retention-days: 90
 
   # 创建 Release
@@ -895,7 +937,7 @@ jobs:
       - name: Download Complete PHP Package
         uses: actions/download-artifact@v4
         with:
-          name: ${{ needs.prepare.outputs.package-name }}-complete
+          name: php-${{ needs.prepare.outputs.php-version }}-windows-${{ github.event.inputs.arch }}
           path: release-assets
 
       - name: Debug - List Downloaded Files
@@ -972,8 +1014,10 @@ jobs:
           name: PHP ${{ needs.prepare.outputs.php-version }} for Windows (${{ github.event.inputs.arch }}/${{ github.event.inputs.thread_safe }})
           body_path: BUILD_INFO.md
           files: |
-            release-assets/${{ needs.prepare.outputs.package-name }}-complete.zip
-            release-assets/${{ needs.prepare.outputs.package-name }}-complete.sha256
+            release-assets/php-${{ needs.prepare.outputs.php-version }}-windows-${{ github.event.inputs.arch }}.zip
+            release-assets/php-${{ needs.prepare.outputs.php-version }}-windows-${{ github.event.inputs.arch }}.zip.sha256
+            release-assets/php-${{ needs.prepare.outputs.php-version }}-windows-${{ github.event.inputs.arch }}.7z
+            release-assets/php-${{ needs.prepare.outputs.php-version }}-windows-${{ github.event.inputs.arch }}.7z.sha256
           draft: false
           prerelease: false
         env:
