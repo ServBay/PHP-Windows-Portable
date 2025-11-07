@@ -1,0 +1,34 @@
+[
+  {
+    "name": "xdebug",
+    "url": "https://github.com/xdebug/xdebug",
+    "ref": "3.4.0",
+    "args": "--enable-xdebug",
+    "libs": "",
+    "php_versions": ["8.2", "8.3", "8.4"]
+  },
+  {
+    "name": "redis",
+    "url": "https://github.com/phpredis/phpredis",
+    "ref": "6.1.0",
+    "args": "--enable-redis",
+    "libs": "",
+    "php_versions": ["8.2", "8.3", "8.4"]
+  },
+  {
+    "name": "imagick",
+    "url": "https://github.com/Imagick/imagick",
+    "ref": "3.7.0",
+    "args": "--with-imagick",
+    "libs": "imagemagick",
+    "php_versions": ["8.2", "8.3", "8.4"]
+  },
+  {
+    "name": "swoole",
+    "url": "https://github.com/swoole/swoole-src",
+    "ref": "5.1.5",
+    "args": "--enable-swoole",
+    "libs": "openssl nghttp2",
+    "php_versions": ["8.1", "8.2", "8.3"]
+  }
+]

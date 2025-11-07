@@ -1,0 +1,75 @@
+# Build directories (local build - deprecated)
+build/
+src/
+deps/
+
+# Build artifacts directories (from GitHub Actions)
+php-build-artifacts-*/
+
+# Environment configuration
+.env
+
+# Visual Studio files
+*.user
+*.suo
+*.sdf
+*.opensdf
+*.vcxproj.filters
+*.vcxproj.user
+.vs/
+
+# Compiled files
+*.obj
+*.o
+*.lo
+*.lib
+*.a
+*.dll
+*.exe
+*.exp
+*.ilk
+*.pdb
+*.manifest
+
+# CMake files
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+*.cmake
+!CMakeLists.txt
+
+# Backup files
+*.bak
+*.orig
+*.~*
+
+# Logs
+*.log
+
+# Temporary files
+*.tmp
+*.temp
+~*
+
+# Archives
+*.zip
+*.tar.gz
+*.7z
+*.rar
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Windows
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# IDEs
+.idea/
+*.swp
+*.swo
+*~
+.vscode/

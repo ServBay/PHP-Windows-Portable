@@ -1,0 +1,37 @@
+[
+  {
+    "name": "redis",
+    "url": "https://github.com/phpredis/phpredis",
+    "ref": "6.2.0",
+    "args": "",
+    "libs": ""
+  },
+  {
+    "name": "imagick",
+    "url": "https://github.com/Imagick/imagick",
+    "ref": "3.8.0",
+    "args": "",
+    "libs": "imagemagick"
+  },
+  {
+    "name": "memcache",
+    "url": "https://github.com/websupport-sk/pecl-memcache",
+    "ref": "8.2",
+    "args": "",
+    "libs": ""
+  },
+  {
+    "name": "memcached",
+    "url": "https://github.com/php-memcached-dev/php-memcached",
+    "ref": "v3.4.0",
+    "args": "",
+    "libs": "libmemcached,zlib"
+  },
+  {
+    "name": "imap",
+    "url": "https://github.com/php/pecl-mail-imap",
+    "ref": "1.0.3",
+    "args": "",
+    "libs": ""
+  }
+]

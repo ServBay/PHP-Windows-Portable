@@ -1,0 +1,980 @@
+name: Build PHP for Windows (Official Builder)
+
+on:
+  workflow_dispatch:
+    inputs:
+      version_type:
+        description: '版本类型 (Version Type)'
+        required: true
+        type: choice
+        options:
+          - stable
+          - testing
+          - development
+        default: 'stable'
+
+      # 稳定版输入
+      stable_version:
+        description: '稳定版版本号 (如: 8.4.14, 8.3.15) - 仅当选择 stable 时有效'
+        required: false
+        default: '8.4.14'
+
+      # 测试版输入
+      testing_tag:
+        description: '测试版标签 (如: php-8.5.0beta2, php-8.5.0RC4) - 仅当选择 testing 时有效'
+        required: false
+        default: 'php-8.5.0beta2'
+
+      # 开发版输入
+      dev_commit:
+        description: '开发版 commit hash (可选，留空使用 master 分支) - 仅当选择 development 时有效'
+        required: false
+        default: ''
+
+      dev_version:
+        description: '开发版版本号 (如: 8.6.0-dev-20251105) - 仅当选择 development 时有效'
+        required: false
+        default: '8.6.0-dev-latest'
+
+      # 构建配置
+      arch:
+        description: '架构 (Architecture)'
+        required: true
+        type: choice
+        options:
+          - x64
+          - x86
+        default: 'x64'
+
+      thread_safe:
+        description: '线程安全 (Thread Safe)'
+        required: true
+        type: choice
+        options:
+          - nts
+          - ts
+        default: 'nts'
+
+      # 扩展配置
+      build_extensions:
+        description: '构建扩展 (Build Extensions)'
+        type: boolean
+        default: true
+
+      extensions_json:
+        description: '扩展配置 JSON (如: [{"name":"xdebug","url":"https://github.com/xdebug/xdebug","ref":"3.4.0","args":"--enable-xdebug"}])'
+        required: false
+        default: ''
+
+      # 发布选项
+      create_release:
+        description: '创建 GitHub Release'
+        type: boolean
+        default: true
+
+jobs:
+  # 准备构建信息
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      php-version: ${{ steps.version.outputs.php-version }}
+      php-source: ${{ steps.version.outputs.php-source }}
+      php-build-version: ${{ steps.version.outputs.php-build-version }}
+      extension-php-version: ${{ steps.version.outputs.extension-php-version }}
+      version-type: ${{ steps.version.outputs.version-type }}
+      package-name: ${{ steps.version.outputs.package-name }}
+      extensions-json: ${{ steps.extensions.outputs.extensions-json }}
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Determine PHP Version and Source
+        id: version
+        run: |
+          VERSION_TYPE="${{ github.event.inputs.version_type }}"
+
+          case "$VERSION_TYPE" in
+            stable)
+              PHP_VERSION="${{ github.event.inputs.stable_version }}"
+              # 稳定版 tag 格式为 php-x.y.z
+              PHP_SOURCE="php-$PHP_VERSION"
+              # 构建版本号就是输入的版本号
+              PHP_BUILD_VERSION="$PHP_VERSION"
+              # 扩展构建也使用相同版本
+              EXTENSION_PHP_VERSION="$PHP_VERSION"
+              ;;
+            testing)
+              TAG="${{ github.event.inputs.testing_tag }}"
+              # 测试版 tag 已包含 php- 前缀，去除前缀得到版本号
+              PHP_VERSION="${TAG#php-}"
+              PHP_SOURCE="$TAG"
+              # 构建版本号使用完整版本号（不含 php- 前缀，构建器会自动添加）
+              PHP_BUILD_VERSION="$PHP_VERSION"
+              # 扩展构建也使用完整版本号，配合下载的 artifacts 使用
+              EXTENSION_PHP_VERSION="$PHP_VERSION"
+              ;;
+            development)
+              COMMIT="${{ github.event.inputs.dev_commit }}"
+              PHP_VERSION="${{ github.event.inputs.dev_version }}"
+              if [ -n "$COMMIT" ]; then
+                # 使用指定的 commit hash
+                PHP_SOURCE="$COMMIT"
+              else
+                # 使用 master 分支最新代码
+                PHP_SOURCE="master"
+              fi
+              # 开发版统一使用 master 作为构建版本
+              PHP_BUILD_VERSION="master"
+              # 扩展构建也使用 master
+              EXTENSION_PHP_VERSION="master"
+              ;;
+          esac
+
+          # 生成包名（与 build-php job 中的格式一致）
+          PACKAGE_NAME="php-$PHP_VERSION-${{ github.event.inputs.thread_safe }}-Win-${{ github.event.inputs.arch }}"
+
+          echo "php-version=$PHP_VERSION" >> $GITHUB_OUTPUT
+          echo "php-source=$PHP_SOURCE" >> $GITHUB_OUTPUT
+          echo "php-build-version=$PHP_BUILD_VERSION" >> $GITHUB_OUTPUT
+          echo "extension-php-version=$EXTENSION_PHP_VERSION" >> $GITHUB_OUTPUT
+          echo "version-type=$VERSION_TYPE" >> $GITHUB_OUTPUT
+          echo "package-name=$PACKAGE_NAME" >> $GITHUB_OUTPUT
+
+          echo "PHP Version: $PHP_VERSION"
+          echo "PHP Source: $PHP_SOURCE"
+          echo "PHP Build Version: $PHP_BUILD_VERSION"
+          echo "Extension PHP Version: $EXTENSION_PHP_VERSION"
+          echo "Version Type: $VERSION_TYPE"
+          echo "Package Name: $PACKAGE_NAME"
+
+      - name: Prepare Extensions Configuration
+        id: extensions
+        run: |
+          CUSTOM_JSON='${{ github.event.inputs.extensions_json }}'
+          VERSION_TYPE='${{ steps.version.outputs.version-type }}'
+          PHP_VERSION='${{ steps.version.outputs.php-version }}'
+
+          if [ -n "$CUSTOM_JSON" ]; then
+            # 使用自定义扩展配置
+            echo "Using custom extensions configuration"
+            EXTENSIONS_JSON="$CUSTOM_JSON"
+          else
+            # 根据 PHP 版本选择扩展配置
+            if [[ "$VERSION_TYPE" == "development" ]] || [[ "$PHP_VERSION" =~ ^8\.6 ]]; then
+              # PHP 8.6 (master/dev) - 只支持部分扩展
+              echo "Using PHP 8.6 extensions configuration (limited support)"
+              EXTENSIONS_JSON=$(cat extensions.php8.6.json)
+              echo "Note: PHP 8.6 supports: redis, imagick, memcache, memcached, imap"
+              echo "Unsupported (missing patches): xdebug"
+            else
+              # 其他版本 - 使用完整扩展配置
+              echo "Using default extensions configuration"
+              EXTENSIONS_JSON=$(cat extensions.default.json)
+            fi
+          fi
+
+          # 输出为单行 JSON
+          EXTENSIONS_JSON_SINGLE=$(echo "$EXTENSIONS_JSON" | jq -c .)
+          echo "extensions-json=$EXTENSIONS_JSON_SINGLE" >> $GITHUB_OUTPUT
+
+          echo "Extensions to build:"
+          echo "$EXTENSIONS_JSON" | jq -r '.[].name'
+
+  # 构建 PHP
+  build-php:
+    needs: prepare
+    runs-on: windows-2022
+    steps:
+      - name: Build PHP
+        uses: ServBay/php-windows-builder/php@master
+        with:
+          php-version: ${{ needs.prepare.outputs.php-build-version }}
+          arch: ${{ github.event.inputs.arch }}
+          ts: ${{ github.event.inputs.thread_safe }}
+
+      - name: Package PHP Build
+        shell: powershell
+        run: |
+          $PHP_VERSION = "${{ needs.prepare.outputs.php-version }}"
+          $ARCH = "${{ github.event.inputs.arch }}"
+          $TS = "${{ github.event.inputs.thread_safe }}"
+
+          # 生成包名
+          $PACKAGE_NAME = "php-$PHP_VERSION-$TS-Win-$ARCH"
+
+          Write-Host "Creating package: $PACKAGE_NAME"
+
+          # artifacts 目录已经由官方 action 创建
+          if (Test-Path "artifacts") {
+            # 压缩为 ZIP
+            Compress-Archive -Path "artifacts\*" -DestinationPath "$PACKAGE_NAME.zip" -Force
+
+            # 生成 SHA256
+            $hash = (Get-FileHash -Path "$PACKAGE_NAME.zip" -Algorithm SHA256).Hash
+            "$hash  $PACKAGE_NAME.zip" | Out-File -FilePath "$PACKAGE_NAME.sha256" -Encoding ASCII
+
+            Write-Host "Package created: $PACKAGE_NAME.zip"
+            Write-Host "SHA256: $hash"
+
+            # 保存包名供后续使用
+            echo "PACKAGE_NAME=$PACKAGE_NAME" >> $env:GITHUB_ENV
+          } else {
+            Write-Host "Error: artifacts directory not found"
+            exit 1
+          }
+
+      - name: Upload Release Package
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.PACKAGE_NAME }}
+          path: |
+            ${{ env.PACKAGE_NAME }}.zip
+            ${{ env.PACKAGE_NAME }}.sha256
+          retention-days: 90
+
+      - name: Upload PHP Build Artifacts (for extension building)
+        uses: actions/upload-artifact@v4
+        with:
+          name: php-build-artifacts-${{ github.event.inputs.arch }}-${{ github.event.inputs.thread_safe }}
+          path: artifacts/
+          retention-days: 7
+
+  # 构建扩展（可选）
+  build-extensions:
+    if: github.event.inputs.build_extensions == 'true'
+    needs: [prepare, build-php]
+    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        extension: ${{ fromJson(needs.prepare.outputs.extensions-json) }}
+    steps:
+      - name: Download PHP Build Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: php-build-artifacts-${{ github.event.inputs.arch }}-${{ github.event.inputs.thread_safe }}
+          path: ${{ runner.temp }}/php-build-artifacts
+
+      - name: Prepare PHP Build for Extension
+        shell: powershell
+        run: |
+          Write-Host "==> Locating PHP build artifacts"
+
+          $artifactPath = "${{ runner.temp }}\php-build-artifacts"
+
+          # 查找下载的 PHP artifacts
+          if (Test-Path $artifactPath) {
+            Write-Host "PHP build artifacts directory found at: $artifactPath"
+            Get-ChildItem -Path $artifactPath -Recurse | Select-Object Name, Length, FullName | ForEach-Object {
+              Write-Host "  - $($_.Name) ($($_.Length) bytes)"
+            }
+
+            # 保存路径供后续步骤使用
+            echo "PHP_ARTIFACT_PATH=$artifactPath" >> $env:GITHUB_ENV
+            Write-Host "PHP_ARTIFACT_PATH set to: $artifactPath"
+          } else {
+            Write-Host "Error: php-build-artifacts directory not found at: $artifactPath"
+            exit 1
+          }
+
+      - name: Build Extension - ${{ matrix.extension.name }}
+        uses: ServBay/php-windows-builder/extension@master
+        with:
+          extension-url: ${{ matrix.extension.url }}
+          extension-ref: ${{ matrix.extension.ref }}
+          php-version: ${{ needs.prepare.outputs.php-build-version }}
+          arch: ${{ github.event.inputs.arch }}
+          ts: ${{ github.event.inputs.thread_safe }}
+          args: ${{ matrix.extension.args }}
+          libs: ${{ matrix.extension.libs || '' }}
+          php-build-path: ${{ env.PHP_ARTIFACT_PATH }}
+          run-tests: ${{ github.event.inputs.version_type == 'stable' }}
+
+      - name: Upload Extension Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: extension-${{ matrix.extension.name }}-${{ needs.prepare.outputs.php-version }}-${{ github.event.inputs.arch }}-${{ github.event.inputs.thread_safe }}
+          path: artifacts/
+          retention-days: 90
+
+  # 打包完整 PHP（包含所有扩展）
+  package-php-complete:
+    if: github.event.inputs.build_extensions == 'true'
+    needs: [prepare, build-php, build-extensions]
+    runs-on: windows-2022
+    steps:
+      - name: Download PHP Release Package
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.prepare.outputs.package-name }}
+          path: php-package
+
+      - name: Download Extension Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: extension-*
+          path: extensions
+
+      - name: Extract and Locate PHP
+        shell: powershell
+        run: |
+          Write-Host "==> Extracting PHP package and locating PHP root"
+
+          # 显示并验证工作目录
+          $workDir = Get-Location
+          Write-Host "Current working directory: $workDir"
+          Write-Host "Workspace: $env:GITHUB_WORKSPACE"
+
+          Write-Host "`nContents of current directory:"
+          Get-ChildItem -Path . | ForEach-Object {
+            $type = if ($_.PSIsContainer) { "DIR " } else { "FILE" }
+            Write-Host "  [$type] $($_.Name)"
+          }
+
+          # 显示 php-package 的实际内容
+          Write-Host "`nContents of php-package:"
+          if (Test-Path "php-package") {
+            Get-ChildItem -Path "php-package" | ForEach-Object {
+              $type = if ($_.PSIsContainer) { "DIR " } else { "FILE" }
+              Write-Host "  [$type] $($_.Name)"
+            }
+          } else {
+            Write-Host "ERROR: php-package directory not found in current directory"
+            exit 1
+          }
+
+          # 递归解压函数
+          function Expand-NestedZips {
+            param(
+              [string]$SourcePath,
+              [string]$DestPath,
+              [string]$Pattern = "*",
+              [int]$Depth = 0
+            )
+
+            $indent = "  " * $Depth
+            Write-Host "${indent}[Depth $Depth] Extracting from: $SourcePath"
+
+            # 查找 ZIP 文件
+            $zipFiles = Get-ChildItem -Path $SourcePath -Filter "*.zip" -File -ErrorAction SilentlyContinue
+
+            if ($zipFiles.Count -eq 0) {
+              Write-Host "${indent}No ZIP files found, extraction complete"
+              return $SourcePath
+            }
+
+            # 根据 pattern 筛选 ZIP（用于 PHP 二进制包选择）
+            if ($Pattern -ne "*") {
+              $filteredZips = $zipFiles | Where-Object {
+                $_.Name -match $Pattern -and
+                $_.Name -notmatch '(-debug-pack-|-devel-pack-|-test-pack-|-src\.zip)'
+              }
+              if ($filteredZips.Count -gt 0) {
+                $zipFiles = $filteredZips
+              }
+            }
+
+            Write-Host "${indent}Found $($zipFiles.Count) ZIP file(s)"
+
+            # 解压第一个符合条件的 ZIP
+            $zipFile = $zipFiles | Select-Object -First 1
+            Write-Host "${indent}Extracting: $($zipFile.Name) ($([math]::Round($zipFile.Length / 1MB, 2)) MB)"
+
+            if (-not (Test-Path $DestPath)) {
+              New-Item -ItemType Directory -Path $DestPath | Out-Null
+            }
+
+            Add-Type -Assembly "System.IO.Compression.Filesystem"
+            try {
+              [System.IO.Compression.ZipFile]::ExtractToDirectory($zipFile.FullName, $DestPath)
+            } catch {
+              Write-Host "${indent}ERROR: Failed to extract: $_"
+              throw
+            }
+
+            Write-Host "${indent}Extraction completed. Contents:"
+            Get-ChildItem -Path $DestPath | Select-Object -First 10 | ForEach-Object {
+              $type = if ($_.PSIsContainer) { "DIR " } else { "FILE" }
+              Write-Host "${indent}  [$type] $($_.Name)"
+            }
+
+            # 递归检查解压后的内容
+            $innerZips = Get-ChildItem -Path $DestPath -Filter "*.zip" -File -ErrorAction SilentlyContinue
+            if ($innerZips.Count -gt 0) {
+              Write-Host "${indent}Nested ZIP detected, continuing recursion..."
+              $newDest = "$DestPath-level$($Depth + 1)"
+              return Expand-NestedZips -SourcePath $DestPath -DestPath $newDest -Pattern $Pattern -Depth ($Depth + 1)
+            } else {
+              Write-Host "${indent}No more nested ZIPs, recursion complete"
+              return $DestPath
+            }
+          }
+
+          # 查找 PHP ZIP
+          $phpZip = Get-ChildItem -Path "php-package" -Filter "*.zip" -File | Select-Object -First 1
+          $searchRoot = $null
+
+          if ($null -ne $phpZip) {
+            Write-Host "`n==> Starting recursive extraction"
+            $searchRoot = Expand-NestedZips -SourcePath "php-package" -DestPath "php-extract" -Pattern 'php-.*-(nts|ts)-Win.*\.zip$' -Depth 0
+            Write-Host "`nFinal search root: $searchRoot"
+          } else {
+            Write-Host "`n==> No ZIP file, using directory directly"
+            $searchRoot = "php-package"
+          }
+
+          # 递归查找 php.exe 确定真正的 PHP 根目录
+          Write-Host "`nLocating php.exe in: $searchRoot"
+
+          $phpExe = Get-ChildItem -Path $searchRoot -Filter "php.exe" -Recurse -File -ErrorAction SilentlyContinue | Select-Object -First 1
+
+          if ($null -eq $phpExe) {
+            Write-Host "ERROR: php.exe not found in $searchRoot"
+
+            Write-Host "`nAttempting to list all directories in search root:"
+            $allDirs = Get-ChildItem -Path $searchRoot -Recurse -Directory -ErrorAction SilentlyContinue | Select-Object -First 20
+            if ($null -ne $allDirs -and $allDirs.Count -gt 0) {
+              Write-Host "Found $($allDirs.Count) directories:"
+              $allDirs | ForEach-Object {
+                Write-Host "  - $($_.FullName)"
+              }
+            } else {
+              Write-Host "No directories found in $searchRoot"
+            }
+
+            Write-Host "`nAttempting to list all .exe files in search root:"
+            $allExes = Get-ChildItem -Path $searchRoot -Filter "*.exe" -Recurse -File -ErrorAction SilentlyContinue
+            if ($null -ne $allExes -and $allExes.Count -gt 0) {
+              Write-Host "Found $($allExes.Count) .exe files:"
+              $allExes | ForEach-Object {
+                Write-Host "  - $($_.FullName)"
+              }
+            } else {
+              Write-Host "No .exe files found in $searchRoot"
+            }
+
+            exit 1
+          }
+
+          $phpRootPath = $phpExe.Directory.FullName
+          Write-Host "[OK] Found PHP root: $phpRootPath"
+
+          # 移动到标准位置
+          $phpRoot = "php"
+          if (Test-Path $phpRoot) {
+            Remove-Item $phpRoot -Recurse -Force
+          }
+
+          Write-Host "Moving PHP to standard location: $phpRoot"
+          Move-Item $phpRootPath $phpRoot
+
+          # 清理所有临时目录（包括递归解压产生的多层目录）
+          Write-Host "`nCleaning up temporary directories..."
+
+          # 清理 PHP 解压产生的所有临时目录
+          Get-ChildItem -Path . -Directory -Filter "php-extract*" -ErrorAction SilentlyContinue | ForEach-Object {
+            Write-Host "  Removing: $($_.Name)"
+            Remove-Item $_.FullName -Recurse -Force -ErrorAction SilentlyContinue
+          }
+
+          # 清理扩展解压产生的所有临时目录
+          Get-ChildItem -Path . -Directory -Filter "ext-*-extract*" -ErrorAction SilentlyContinue | ForEach-Object {
+            Write-Host "  Removing: $($_.Name)"
+            Remove-Item $_.FullName -Recurse -Force -ErrorAction SilentlyContinue
+          }
+
+          Write-Host "Cleanup completed"
+
+          # 验证 PHP 目录结构
+          Write-Host "`nVerifying PHP structure:"
+          $phpExePath = Join-Path $phpRoot "php.exe"
+          $extDirPath = Join-Path $phpRoot "ext"
+
+          if (-not (Test-Path $phpExePath)) {
+            Write-Host "ERROR: php.exe not found at $phpExePath"
+            exit 1
+          }
+
+          if (-not (Test-Path $extDirPath)) {
+            Write-Host "Creating ext directory"
+            New-Item -ItemType Directory -Path $extDirPath | Out-Null
+          }
+
+          Write-Host "[OK] PHP root verified: $phpRoot"
+
+      - name: Integrate Extensions
+        shell: powershell
+        run: |
+          # 递归解压函数（与 Extract and Locate PHP 步骤中相同）
+          function Expand-NestedZips {
+            param(
+              [string]$SourcePath,
+              [string]$DestPath,
+              [string]$Pattern = "*",
+              [int]$Depth = 0
+            )
+
+            $indent = "  " * $Depth
+            Write-Host "${indent}[Depth $Depth] Extracting from: $SourcePath"
+
+            # 查找 ZIP 文件
+            $zipFiles = Get-ChildItem -Path $SourcePath -Filter "*.zip" -File -ErrorAction SilentlyContinue
+
+            if ($zipFiles.Count -eq 0) {
+              Write-Host "${indent}No ZIP files found, extraction complete"
+              return $SourcePath
+            }
+
+            # 根据 pattern 筛选 ZIP（用于 PHP 二进制包选择）
+            if ($Pattern -ne "*") {
+              $filteredZips = $zipFiles | Where-Object {
+                $_.Name -match $Pattern -and
+                $_.Name -notmatch '(-debug-pack-|-devel-pack-|-test-pack-|-src\.zip)'
+              }
+              if ($filteredZips.Count -gt 0) {
+                $zipFiles = $filteredZips
+              }
+            }
+
+            Write-Host "${indent}Found $($zipFiles.Count) ZIP file(s)"
+
+            # 解压第一个符合条件的 ZIP
+            $zipFile = $zipFiles | Select-Object -First 1
+            Write-Host "${indent}Extracting: $($zipFile.Name) ($([math]::Round($zipFile.Length / 1MB, 2)) MB)"
+
+            if (-not (Test-Path $DestPath)) {
+              New-Item -ItemType Directory -Path $DestPath | Out-Null
+            }
+
+            Add-Type -Assembly "System.IO.Compression.Filesystem"
+            try {
+              [System.IO.Compression.ZipFile]::ExtractToDirectory($zipFile.FullName, $DestPath)
+            } catch {
+              Write-Host "${indent}ERROR: Failed to extract: $_"
+              throw
+            }
+
+            Write-Host "${indent}Extraction completed. Contents:"
+            Get-ChildItem -Path $DestPath | Select-Object -First 10 | ForEach-Object {
+              $type = if ($_.PSIsContainer) { "DIR " } else { "FILE" }
+              Write-Host "${indent}  [$type] $($_.Name)"
+            }
+
+            # 递归检查解压后的内容
+            $innerZips = Get-ChildItem -Path $DestPath -Filter "*.zip" -File -ErrorAction SilentlyContinue
+            if ($innerZips.Count -gt 0) {
+              Write-Host "${indent}Nested ZIP detected, continuing recursion..."
+              $newDest = "$DestPath-level$($Depth + 1)"
+              return Expand-NestedZips -SourcePath $DestPath -DestPath $newDest -Pattern $Pattern -Depth ($Depth + 1)
+            } else {
+              Write-Host "${indent}No more nested ZIPs, recursion complete"
+              return $DestPath
+            }
+          }
+
+          Write-Host "==> Integrating extensions into PHP"
+
+          # 显示并验证工作目录
+          $workDir = Get-Location
+          Write-Host "Current working directory: $workDir"
+
+          Write-Host "`nContents of current directory:"
+          Get-ChildItem -Path . | ForEach-Object {
+            $type = if ($_.PSIsContainer) { "DIR " } else { "FILE" }
+            Write-Host "  [$type] $($_.Name)"
+          }
+
+          $phpRoot = "php"
+          $extDir = Join-Path $phpRoot "ext"
+
+          # 验证 PHP 目录是否存在
+          if (-not (Test-Path $phpRoot)) {
+            Write-Host "ERROR: PHP directory '$phpRoot' not found in current directory"
+            Write-Host "This step depends on the previous 'Extract and Locate PHP' step"
+            exit 1
+          }
+
+          Write-Host "`nPHP directory found: $((Get-Item $phpRoot).FullName)"
+
+          # 统计变量
+          $totalExtensions = 0
+          $totalDlls = 0
+          $totalInis = 0
+          $totalConfigs = 0
+
+          # 检查 extensions 目录是否存在
+          if (-not (Test-Path "extensions")) {
+            Write-Host "WARNING: extensions directory not found, skipping extension integration"
+            exit 0
+          }
+
+          Write-Host "`nAnalyzing downloaded extension artifacts..."
+          Write-Host "Contents of extensions:"
+          Get-ChildItem -Path "extensions" -Directory | ForEach-Object {
+            Write-Host "  [DIR] $($_.Name)"
+          }
+
+          # 获取所有扩展目录
+          $extensionDirs = Get-ChildItem -Path "extensions" -Directory -ErrorAction SilentlyContinue
+
+          if ($null -eq $extensionDirs -or $extensionDirs.Count -eq 0) {
+            Write-Host "WARNING: No extension directories found in extensions/"
+            exit 0
+          }
+
+          Write-Host "`nFound $($extensionDirs.Count) extension(s) to process"
+
+          foreach ($extDir_Item in $extensionDirs) {
+            $extName = $extDir_Item.Name -replace '^extension-([^-]+).*', '$1'
+            Write-Host "`n========================================`n==> Processing extension: $extName`n========================================"
+            $totalExtensions++
+
+            # 显示扩展 artifact 内容
+            Write-Host "Artifact contents:"
+            Get-ChildItem -Path $extDir_Item.FullName | Select-Object -First 10 | ForEach-Object {
+              $type = if ($_.PSIsContainer) { "DIR " } else { "FILE" }
+              Write-Host "  [$type] $($_.Name)"
+            }
+
+            # 检测是否有 zip 文件需要递归解压
+            $extZipFiles = Get-ChildItem -Path $extDir_Item.FullName -Filter "*.zip" -File -ErrorAction SilentlyContinue
+            $extSearchRoot = $null
+
+            if ($null -ne $extZipFiles -and $extZipFiles.Count -gt 0) {
+              Write-Host "`n[ZIP Mode] Found $($extZipFiles.Count) ZIP file(s), starting recursive extraction..."
+
+              # 使用递归解压函数处理可能的嵌套 ZIP
+              $extExtractBase = "ext-$extName-extract"
+              $extSearchRoot = Expand-NestedZips -SourcePath $extDir_Item.FullName -DestPath $extExtractBase -Pattern "*" -Depth 0
+
+              Write-Host "`nFinal search root for $extName : $extSearchRoot"
+            } else {
+              Write-Host "`n[Directory Mode] No ZIP files, using directory directly"
+              $extSearchRoot = $extDir_Item.FullName
+            }
+
+            # 显示实际搜索根目录的结构
+            Write-Host "`nSearching in: $extSearchRoot"
+            Write-Host "Directory structure (top 2 levels, first 15 items):"
+            $extSearchRootFullPath = (Get-Item $extSearchRoot).FullName
+            Get-ChildItem -Path $extSearchRoot -Recurse -Depth 2 -ErrorAction SilentlyContinue | Select-Object -First 15 | ForEach-Object {
+              try {
+                $relativePath = $_.FullName.Substring($extSearchRootFullPath.Length)
+                $type = if ($_.PSIsContainer) { "DIR " } else { "FILE" }
+                Write-Host "  [$type] $relativePath"
+              } catch {
+                # 忽略路径处理错误
+              }
+            }
+
+            # 递归查找扩展目录中的所有文件
+            $allFiles = Get-ChildItem -Path $extSearchRoot -Recurse -File -ErrorAction SilentlyContinue
+
+            if ($null -eq $allFiles -or $allFiles.Count -eq 0) {
+              Write-Host "WARNING: No files found in $extSearchRoot, skipping"
+              if ($null -ne $extTempDir -and (Test-Path $extTempDir)) {
+                Remove-Item $extTempDir -Recurse -Force -ErrorAction SilentlyContinue
+              }
+              continue
+            }
+
+            Write-Host "`nFound $($allFiles.Count) files in extension package"
+
+            # 统计文件类型
+            $extDllCount = 0
+            $depDllCount = 0
+            $iniCount = 0
+            $configDirCount = 0
+
+            # 处理 DLL 文件
+            $dllFiles = $allFiles | Where-Object { $_.Extension -eq ".dll" }
+            Write-Host "`nProcessing $($dllFiles.Count) DLL files:"
+
+            foreach ($dll in $dllFiles) {
+              if ($dll.Name -match '^php_([^-]+).*\.dll$') {
+                # PHP 扩展 DLL: php_*.dll
+                $extBaseName = $matches[1]
+                $targetName = "php_$extBaseName.dll"
+                $targetPath = Join-Path $extDir $targetName
+                Write-Host "  [EXT] $($dll.Name) -> ext\$targetName"
+                Copy-Item $dll.FullName -Destination $targetPath -Force
+                $extDllCount++
+                $totalDlls++
+              } else {
+                # 依赖库 DLL: 复制到 PHP 根目录
+                $targetPath = Join-Path $phpRoot $dll.Name
+                Write-Host "  [DEP] $($dll.Name) -> root\"
+                Copy-Item $dll.FullName -Destination $targetPath -Force
+                $depDllCount++
+                $totalDlls++
+              }
+            }
+
+            # 处理 INI 文件
+            $iniFiles = $allFiles | Where-Object { $_.Extension -eq ".ini" }
+            if ($iniFiles.Count -gt 0) {
+              Write-Host "`nProcessing $($iniFiles.Count) INI files:"
+              foreach ($ini in $iniFiles) {
+                $targetPath = Join-Path $phpRoot $ini.Name
+                Write-Host "  [INI] $($ini.Name) -> root\"
+                Copy-Item $ini.FullName -Destination $targetPath -Force
+                $iniCount++
+                $totalInis++
+              }
+            }
+
+            # 处理 config 目录（递归复制整个目录结构）
+            $configDirs = Get-ChildItem -Path $extSearchRoot -Directory -Recurse -ErrorAction SilentlyContinue | Where-Object { $_.Name -eq "config" }
+            if ($configDirs) {
+              Write-Host "`nProcessing config directories:"
+              foreach ($configDir in $configDirs) {
+                $targetConfigDir = Join-Path $phpRoot "config"
+                Write-Host "  [CFG] $($configDir.FullName) -> root\config\"
+                if (-not (Test-Path $targetConfigDir)) {
+                  New-Item -ItemType Directory -Path $targetConfigDir | Out-Null
+                }
+                Copy-Item $configDir.FullName -Destination $phpRoot -Recurse -Force
+                $configDirCount++
+                $totalConfigs++
+              }
+            }
+
+            # 处理其他配置文件 (xml, conf, txt)
+            $otherConfigs = $allFiles | Where-Object { $_.Extension -in ".xml", ".conf", ".txt" }
+            if ($otherConfigs.Count -gt 0) {
+              Write-Host "`nProcessing $($otherConfigs.Count) config files:"
+              foreach ($config in $otherConfigs) {
+                # 保持相对路径结构（使用实际的搜索根目录）
+                $relativePath = $config.FullName.Substring($extSearchRootFullPath.Length + 1)
+                $targetPath = Join-Path $phpRoot $relativePath
+                $targetDir = Split-Path $targetPath -Parent
+
+                if (-not (Test-Path $targetDir)) {
+                  New-Item -ItemType Directory -Path $targetDir -Force | Out-Null
+                }
+
+                Write-Host "  [CFG] $relativePath -> root\$relativePath"
+                Copy-Item $config.FullName -Destination $targetPath -Force
+              }
+            }
+
+            # 验证关键文件
+            Write-Host "`n--- Extension Summary ---"
+            Write-Host "  Extension DLLs: $extDllCount"
+            Write-Host "  Dependency DLLs: $depDllCount"
+            Write-Host "  INI files: $iniCount"
+            Write-Host "  Config dirs: $configDirCount"
+
+            if ($extDllCount -eq 0) {
+              Write-Host "  WARNING: No extension DLL found for $extName"
+            }
+
+            # 针对特定扩展的验证
+            if ($extName -eq "imagick") {
+              $coreDlls = $dllFiles | Where-Object { $_.Name -match "^CORE_RL_" }
+              if ($coreDlls.Count -eq 0) {
+                Write-Host "  WARNING: No CORE_RL_*.dll found for imagick"
+              } else {
+                Write-Host "  [OK] Found $($coreDlls.Count) CORE_RL_*.dll files"
+              }
+            }
+
+            Write-Host "[OK] $extName integration complete"
+
+            # 清理临时目录（如果是 ZIP 模式）
+            if ($null -ne $extTempDir -and (Test-Path $extTempDir)) {
+              Write-Host "Cleaning up temporary directory..."
+              Remove-Item $extTempDir -Recurse -Force -ErrorAction SilentlyContinue
+            }
+          }
+
+          # 总体摘要
+          Write-Host "`n========================================"
+          Write-Host "==> Integration Complete"
+          Write-Host "========================================"
+          Write-Host "Total extensions processed: $totalExtensions"
+          Write-Host "Total DLLs copied: $totalDlls"
+          Write-Host "Total INI files: $totalInis"
+          Write-Host "Total config directories: $totalConfigs"
+
+          # 列出最终的 ext 目录
+          Write-Host "`nFinal ext\ directory:"
+          Get-ChildItem -Path $extDir -Filter "php_*.dll" | ForEach-Object {
+            Write-Host "  - $($_.Name)"
+          }
+
+      - name: Create Complete PHP Package
+        shell: powershell
+        run: |
+          Write-Host "==> Creating complete PHP package with extensions"
+
+          # 显示并验证工作目录
+          $workDir = Get-Location
+          Write-Host "Current working directory: $workDir"
+
+          Write-Host "`nContents of current directory:"
+          Get-ChildItem -Path . | ForEach-Object {
+            $type = if ($_.PSIsContainer) { "DIR " } else { "FILE" }
+            Write-Host "  [$type] $($_.Name)"
+          }
+
+          $packageName = "${{ needs.prepare.outputs.package-name }}-complete"
+          $phpRoot = "php"
+
+          # 验证 PHP 目录
+          if (-not (Test-Path $phpRoot)) {
+            Write-Host "ERROR: PHP directory not found: $phpRoot"
+            Write-Host "This step depends on previous steps completing successfully"
+            exit 1
+          }
+
+          Write-Host "`nPHP directory found: $((Get-Item $phpRoot).FullName)"
+
+          $phpExe = Join-Path $phpRoot "php.exe"
+          if (-not (Test-Path $phpExe)) {
+            Write-Host "ERROR: php.exe not found"
+            exit 1
+          }
+
+          # 统计包内容
+          Write-Host "`nPackage contents:"
+          $extDlls = Get-ChildItem -Path (Join-Path $phpRoot "ext") -Filter "php_*.dll" -ErrorAction SilentlyContinue
+          Write-Host "  Extensions: $($extDlls.Count) DLLs"
+
+          $rootDlls = Get-ChildItem -Path $phpRoot -Filter "*.dll" -File -ErrorAction SilentlyContinue
+          Write-Host "  Root DLLs: $($rootDlls.Count)"
+
+          $iniFiles = Get-ChildItem -Path $phpRoot -Filter "*.ini" -File -ErrorAction SilentlyContinue
+          Write-Host "  INI files: $($iniFiles.Count)"
+
+          $configDir = Join-Path $phpRoot "config"
+          if (Test-Path $configDir) {
+            $configFiles = Get-ChildItem -Path $configDir -Recurse -File
+            Write-Host "  Config files: $($configFiles.Count)"
+          }
+
+          # 创建 ZIP 包
+          Add-Type -Assembly "System.IO.Compression.Filesystem"
+          $zipPath = "$packageName.zip"
+
+          if (Test-Path $zipPath) {
+            Remove-Item $zipPath -Force
+          }
+
+          Write-Host "`nCreating ZIP package..."
+          [System.IO.Compression.ZipFile]::CreateFromDirectory($phpRoot, $zipPath, [System.IO.Compression.CompressionLevel]::Optimal, $false)
+
+          $sizeInMB = [math]::Round((Get-Item $zipPath).Length / 1MB, 2)
+          Write-Host "[OK] Package created: $zipPath"
+          Write-Host "  Size: $sizeInMB MB"
+
+          # 生成 SHA256
+          $hash = (Get-FileHash -Path $zipPath -Algorithm SHA256).Hash
+          Set-Content -Path "$packageName.sha256" -Value $hash
+          Write-Host "  SHA256: $hash"
+
+      - name: Upload Complete PHP Package
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ needs.prepare.outputs.package-name }}-complete
+          path: |
+            ${{ needs.prepare.outputs.package-name }}-complete.zip
+            ${{ needs.prepare.outputs.package-name }}-complete.sha256
+          retention-days: 90
+
+  # 创建 Release
+  create-release:
+    if: |
+      github.event.inputs.create_release == 'true' &&
+      always() &&
+      !cancelled() &&
+      needs.build-php.result == 'success'
+    needs: [prepare, build-php, build-extensions, package-php-complete]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Complete PHP Package
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.prepare.outputs.package-name }}-complete
+          path: release-assets
+
+      - name: Debug - List Downloaded Files
+        run: |
+          echo "==> Contents of release-assets directory:"
+          ls -lah release-assets/
+          echo ""
+          echo "==> Finding all files:"
+          find release-assets -type f
+          echo ""
+          echo "==> Current directory:"
+          pwd
+          ls -lah
+
+      - name: Create BUILD_INFO.md
+        run: |
+          BUILD_TIME=$(date -u +"%Y-%m-%d %H:%M:%S UTC")
+          cat > BUILD_INFO.md << EOF
+          # PHP for Windows - 构建信息
+
+          ## 版本信息
+
+          - **PHP 版本**: ${{ needs.prepare.outputs.php-version }}
+          - **版本类型**: ${{ needs.prepare.outputs.version-type }}
+          - **架构**: ${{ github.event.inputs.arch }}
+          - **线程安全**: ${{ github.event.inputs.thread_safe }}
+          - **构建时间**: ${BUILD_TIME}
+          - **构建编号**: ${{ github.run_number }}
+
+          ## 构建来源
+
+          - **源码来源**: ${{ needs.prepare.outputs.php-source }}
+          - **构建工具**: php-windows-builder (官方)
+          - **GitHub Actions**: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+          ## 安装说明
+
+          1. 下载对应的 ZIP 包
+          2. 验证 SHA256 校验和
+          3. 解压到目标目录
+          4. 配置 php.ini
+          5. 添加到系统 PATH
+
+          ## SHA256 校验
+
+          请使用提供的 .sha256 文件验证下载完整性：
+
+          ```powershell
+          # Windows PowerShell
+          $hash = (Get-FileHash -Path "php-*.zip" -Algorithm SHA256).Hash
+          $expected = (Get-Content "php-*.sha256").Split()[0]
+          if ($hash -eq $expected) { Write-Host "[OK] 验证通过" } else { Write-Host "[ERROR] 验证失败" }
+          ```
+
+          ```bash
+          # Linux/macOS
+          sha256sum -c php-*.sha256
+          ```
+
+          ## 支持与反馈
+
+          - 问题反馈: https://github.com/${{ github.repository }}/issues
+          - 项目主页: https://github.com/${{ github.repository }}
+
+          ---
+
+          🤖 由 [PHP Windows Builder](https://github.com/php/php-windows-builder) 构建
+          EOF
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: php-${{ needs.prepare.outputs.php-version }}-${{ github.event.inputs.arch }}-${{ github.event.inputs.thread_safe }}
+          name: PHP ${{ needs.prepare.outputs.php-version }} for Windows (${{ github.event.inputs.arch }}/${{ github.event.inputs.thread_safe }})
+          body_path: BUILD_INFO.md
+          files: |
+            release-assets/${{ needs.prepare.outputs.package-name }}-complete.zip
+            release-assets/${{ needs.prepare.outputs.package-name }}-complete.sha256
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
