@@ -329,7 +329,7 @@ jobs:
       - name: Download PHP Release Package
         uses: actions/download-artifact@v4
         with:
-          name: ${{ needs.prepare.outputs.package-name }}
+          name: php-${{ needs.prepare.outputs.php-version }}-windows-${{ github.event.inputs.arch }}-no-extensions
           path: php-package
 
       - name: Download Extension Artifacts
