@@ -17,13 +17,13 @@ on:
       stable_version:
         description: '稳定版版本号 (如: 8.4.14, 8.3.15) - 仅当选择 stable 时有效'
         required: false
-        default: '8.4.14'
+        default: '8.4.16'
 
       # 测试版输入
       testing_tag:
         description: '测试版标签 (如: php-8.5.0beta2, php-8.5.0RC4) - 仅当选择 testing 时有效'
         required: false
-        default: 'php-8.5.0beta2'
+        default: 'php-8.5.0'
 
       # 开发版输入
       dev_commit:
@@ -161,11 +161,9 @@ jobs:
           else
             # 根据 PHP 版本选择扩展配置
             if [[ "$VERSION_TYPE" == "development" ]] || [[ "$PHP_VERSION" =~ ^8\.6 ]]; then
-              # PHP 8.6 (master/dev) - 只支持部分扩展
-              echo "Using PHP 8.6 extensions configuration (limited support)"
+              # PHP 8.6 (master/dev) - 使用 PHP 8.6 专用扩展配置（包含全部扩展）
+              echo "Using PHP 8.6 extensions configuration"
               EXTENSIONS_JSON=$(cat extensions.php8.6.json)
-              echo "Note: PHP 8.6 supports: redis, imagick, memcache, memcached, imap"
-              echo "Unsupported (missing patches): xdebug"
             else
               # 其他版本 - 使用完整扩展配置
               echo "Using default extensions configuration"
