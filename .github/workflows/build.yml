@@ -171,6 +171,14 @@ jobs:
             fi
           fi
 
+          # PHP < 8.4 时过滤掉 imap（imap 在 PHP 8.1-8.3 中是内置扩展，通过编译参数传入）
+          # pecl-mail-imap 1.0.3 仅兼容 PHP 8.4+
+          PHP_MINOR=$(echo "$PHP_VERSION" | cut -d. -f2)
+          if [ "$PHP_MINOR" -lt 4 ] 2>/dev/null; then
+            EXTENSIONS_JSON=$(echo "$EXTENSIONS_JSON" | jq '[.[] | select(.name != "imap")]')
+            echo "Filtered out imap (built-in for PHP < 8.4)"
+          fi
+
           # 输出为单行 JSON
           EXTENSIONS_JSON_SINGLE=$(echo "$EXTENSIONS_JSON" | jq -c .)
           echo "extensions-json=$EXTENSIONS_JSON_SINGLE" >> $GITHUB_OUTPUT
