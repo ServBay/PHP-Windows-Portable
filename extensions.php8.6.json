@@ -77,13 +77,6 @@
     "libs": ""
   },
   {
-    "name": "phalcon",
-    "url": "https://pecl.php.net/package/phalcon",
-    "ref": "5.10.0",
-    "args": "",
-    "libs": ""
-  },
-  {
     "name": "protobuf",
     "url": "https://pecl.php.net/package/protobuf",
     "ref": "4.29.6",
