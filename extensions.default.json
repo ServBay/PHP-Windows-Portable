@@ -40,5 +40,33 @@
     "ref": "1.0.3",
     "args": "",
     "libs": ""
+  },
+  {
+    "name": "apcu",
+    "url": "https://github.com/krakjoe/apcu",
+    "ref": "v5.1.28",
+    "args": "",
+    "libs": ""
+  },
+  {
+    "name": "mongodb",
+    "url": "https://pecl.php.net/package/mongodb",
+    "ref": "2.2.1",
+    "args": "",
+    "libs": ""
+  },
+  {
+    "name": "sqlsrv",
+    "url": "https://pecl.php.net/package/sqlsrv",
+    "ref": "5.12.0",
+    "args": "",
+    "libs": ""
+  },
+  {
+    "name": "pdo_sqlsrv",
+    "url": "https://pecl.php.net/package/pdo_sqlsrv",
+    "ref": "5.12.0",
+    "args": "",
+    "libs": ""
   }
 ]
