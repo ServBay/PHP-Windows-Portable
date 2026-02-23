@@ -68,5 +68,54 @@
     "ref": "5.12.0",
     "args": "",
     "libs": ""
+  },
+  {
+    "name": "yaml",
+    "url": "https://pecl.php.net/package/yaml",
+    "ref": "2.3.0",
+    "args": "",
+    "libs": ""
+  },
+  {
+    "name": "phalcon",
+    "url": "https://pecl.php.net/package/phalcon",
+    "ref": "5.10.0",
+    "args": "",
+    "libs": ""
+  },
+  {
+    "name": "protobuf",
+    "url": "https://pecl.php.net/package/protobuf",
+    "ref": "4.29.6",
+    "args": "",
+    "libs": ""
+  },
+  {
+    "name": "grpc",
+    "url": "https://pecl.php.net/package/grpc",
+    "ref": "1.78.0",
+    "args": "",
+    "libs": ""
+  },
+  {
+    "name": "igbinary",
+    "url": "https://github.com/igbinary/igbinary",
+    "ref": "3.2.16",
+    "args": "",
+    "libs": ""
+  },
+  {
+    "name": "msgpack",
+    "url": "https://github.com/msgpack/msgpack-php",
+    "ref": "msgpack-3.0.0",
+    "args": "",
+    "libs": ""
+  },
+  {
+    "name": "oauth",
+    "url": "https://pecl.php.net/package/oauth",
+    "ref": "2.0.10",
+    "args": "",
+    "libs": ""
   }
 ]
