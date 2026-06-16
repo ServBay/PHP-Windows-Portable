@@ -109,6 +109,6 @@
     "url": "https://pecl.php.net/package/oauth",
     "ref": "2.0.10",
     "args": "",
-    "libs": ""
+    "libs": "nghttp2"
   }
 ]
