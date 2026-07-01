@@ -194,7 +194,9 @@ jobs:
   # 构建 PHP
   build-php:
     needs: prepare
-    runs-on: windows-2022
+    # 8.6/master build with the vs18 toolset (MSVC 14.50+), available only on the
+    # newer image; older/stable versions stay on windows-2022.
+    runs-on: ${{ (contains(needs.prepare.outputs.php-version, '8.6') || contains(needs.prepare.outputs.php-version, 'master')) && 'windows-2025-vs2026' || 'windows-2022' }}
     steps:
       - name: Build PHP
         uses: ServBay/php-windows-builder/php@master
@@ -278,7 +280,7 @@ jobs:
   build-extensions:
     if: github.event.inputs.build_extensions == 'true'
     needs: [prepare, build-php]
-    runs-on: windows-2022
+    runs-on: ${{ (contains(needs.prepare.outputs.php-version, '8.6') || contains(needs.prepare.outputs.php-version, 'master')) && 'windows-2025-vs2026' || 'windows-2022' }}
     strategy:
       fail-fast: false
       matrix:
