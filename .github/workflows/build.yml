@@ -83,8 +83,9 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       php-version: ${{ steps.version.outputs.php-version }}
-      php-source: ${{ steps.version.outputs.php-source }}
-      php-build-version: ${{ steps.version.outputs.php-build-version }}
+      source-ref: ${{ steps.version.outputs.source-ref }}
+      build-version: ${{ steps.version.outputs.build-version }}
+      build-branch: ${{ steps.version.outputs.build-branch }}
       extension-php-version: ${{ steps.version.outputs.extension-php-version }}
       version-type: ${{ steps.version.outputs.version-type }}
       package-name: ${{ steps.version.outputs.package-name }}
@@ -98,39 +99,36 @@ jobs:
         run: |
           VERSION_TYPE="${{ github.event.inputs.version_type }}"
 
+          # Three deliberately separate knobs:
+          #   SOURCE_REF    - which PHP source build-php compiles (tag / commit / master)
+          #   BUILD_VERSION - the SDK build env for extensions (deps/CRT source)
+          #   BUILD_BRANCH  - passed to build-php to pin libsdk's deps/CRT branch;
+          #                   only needed when SOURCE_REF's own branch has no SDK deps
           case "$VERSION_TYPE" in
             stable)
               PHP_VERSION="${{ github.event.inputs.stable_version }}"
-              # 稳定版 tag 格式为 php-x.y.z
-              PHP_SOURCE="php-$PHP_VERSION"
-              # 构建版本号就是输入的版本号
-              PHP_BUILD_VERSION="$PHP_VERSION"
-              # 扩展构建也使用相同版本
+              SOURCE_REF="$PHP_VERSION"        # Get-PhpSrc adds the php- prefix for tags
+              BUILD_VERSION="$PHP_VERSION"
+              BUILD_BRANCH=""
               EXTENSION_PHP_VERSION="$PHP_VERSION"
               ;;
             testing)
               TAG="${{ github.event.inputs.testing_tag }}"
-              # 测试版 tag 已包含 php- 前缀，去除前缀得到版本号
               PHP_VERSION="${TAG#php-}"
-              PHP_SOURCE="$TAG"
-              # 构建版本号使用完整版本号（不含 php- 前缀，构建器会自动添加）
-              PHP_BUILD_VERSION="$PHP_VERSION"
-              # 扩展构建也使用完整版本号，配合下载的 artifacts 使用
+              SOURCE_REF="$PHP_VERSION"
+              BUILD_VERSION="$PHP_VERSION"
+              BUILD_BRANCH=""
               EXTENSION_PHP_VERSION="$PHP_VERSION"
               ;;
             development)
               COMMIT="${{ github.event.inputs.dev_commit }}"
               PHP_VERSION="${{ github.event.inputs.dev_version }}"
-              if [ -n "$COMMIT" ]; then
-                # 使用指定的 commit hash
-                PHP_SOURCE="$COMMIT"
-              else
-                # 使用 master 分支最新代码
-                PHP_SOURCE="master"
-              fi
-              # 开发版统一使用 master 作为构建版本
-              PHP_BUILD_VERSION="master"
-              # 扩展构建也使用 master
+              # Compile the exact pre-GA source (a tag's commit when given), but
+              # resolve deps/CRT and extensions from master, whose SDK deps are
+              # published (the pre-GA branch's deps are not).
+              SOURCE_REF="${COMMIT:-master}"
+              BUILD_VERSION="master"
+              BUILD_BRANCH="master"
               EXTENSION_PHP_VERSION="master"
               ;;
           esac
@@ -139,15 +137,17 @@ jobs:
           PACKAGE_NAME="php-$PHP_VERSION-${{ github.event.inputs.thread_safe }}-Win-${{ github.event.inputs.arch }}"
 
           echo "php-version=$PHP_VERSION" >> $GITHUB_OUTPUT
-          echo "php-source=$PHP_SOURCE" >> $GITHUB_OUTPUT
-          echo "php-build-version=$PHP_BUILD_VERSION" >> $GITHUB_OUTPUT
+          echo "source-ref=$SOURCE_REF" >> $GITHUB_OUTPUT
+          echo "build-version=$BUILD_VERSION" >> $GITHUB_OUTPUT
+          echo "build-branch=$BUILD_BRANCH" >> $GITHUB_OUTPUT
           echo "extension-php-version=$EXTENSION_PHP_VERSION" >> $GITHUB_OUTPUT
           echo "version-type=$VERSION_TYPE" >> $GITHUB_OUTPUT
           echo "package-name=$PACKAGE_NAME" >> $GITHUB_OUTPUT
 
           echo "PHP Version: $PHP_VERSION"
-          echo "PHP Source: $PHP_SOURCE"
-          echo "PHP Build Version: $PHP_BUILD_VERSION"
+          echo "Source Ref: $SOURCE_REF"
+          echo "Build Version: $BUILD_VERSION"
+          echo "Build Branch: $BUILD_BRANCH"
           echo "Extension PHP Version: $EXTENSION_PHP_VERSION"
           echo "Version Type: $VERSION_TYPE"
           echo "Package Name: $PACKAGE_NAME"
@@ -199,7 +199,8 @@ jobs:
       - name: Build PHP
         uses: ServBay/php-windows-builder/php@master
         with:
-          php-version: ${{ needs.prepare.outputs.php-build-version }}
+          php-version: ${{ needs.prepare.outputs.source-ref }}
+          build-branch: ${{ needs.prepare.outputs.build-branch }}
           arch: ${{ github.event.inputs.arch }}
           ts: ${{ github.event.inputs.thread_safe }}
 
@@ -316,7 +317,7 @@ jobs:
         with:
           extension-url: ${{ matrix.extension.url }}
           extension-ref: ${{ matrix.extension.ref }}
-          php-version: ${{ needs.prepare.outputs.php-build-version }}
+          php-version: ${{ needs.prepare.outputs.build-version }}
           arch: ${{ github.event.inputs.arch }}
           ts: ${{ github.event.inputs.thread_safe }}
           args: ${{ matrix.extension.args }}
@@ -980,7 +981,8 @@ jobs:
 
           ## 构建来源
 
-          - **源码来源**: ${{ needs.prepare.outputs.php-source }}
+          - **源码来源**: ${{ needs.prepare.outputs.source-ref }}
+          - **构建环境**: ${{ needs.prepare.outputs.build-version }}
           - **构建工具**: php-windows-builder (官方)
           - **GitHub Actions**: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
