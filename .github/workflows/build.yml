@@ -954,6 +954,45 @@ jobs:
           name: php-${{ needs.prepare.outputs.php-version }}-windows-${{ github.event.inputs.arch }}
           path: release-assets
 
+      - name: Checkout Producer Source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: producer-source
+
+      - name: Set Up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Download Original PHP Build Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: php-build-artifacts-${{ github.event.inputs.arch }}-${{ github.event.inputs.thread_safe }}
+          path: split-inputs/core
+
+      - name: Download Original Extension Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: extension-*-${{ needs.prepare.outputs.php-version }}-${{ github.event.inputs.arch }}-${{ github.event.inputs.thread_safe }}
+          path: split-inputs/extensions
+          merge-multiple: false
+
+      - name: Prepare Original Split Release Assets
+        id: split-assets
+        env:
+          SPLIT_SELECTED_EXTENSIONS_JSON: ${{ needs.prepare.outputs.extensions-json }}
+          SPLIT_BUILD_CONTEXT_JSON: >-
+            {"producer":{"repository":${{ toJSON(github.repository) }},"commit":${{ toJSON(github.sha) }},"run_id":${{ toJSON(github.run_id) }},"run_attempt":${{ toJSON(github.run_attempt) }}},
+            "display_version":${{ toJSON(needs.prepare.outputs.php-version) }},"source_ref":${{ toJSON(needs.prepare.outputs.source-ref) }},
+            "build_version":${{ toJSON(needs.prepare.outputs.build-version) }},"build_branch":${{ toJSON(needs.prepare.outputs.build-branch) }},
+            "arch":${{ toJSON(github.event.inputs.arch) }},"thread_safe":${{ toJSON(github.event.inputs.thread_safe) }}}
+        run: >-
+          python producer-source/scripts/prepare_split_release.py
+          --core-artifacts split-inputs/core
+          --extension-artifacts split-inputs/extensions
+          --output-dir split-release-assets
+
       - name: Debug - List Downloaded Files
         run: |
           echo "==> Contents of release-assets directory:"
@@ -1033,6 +1072,7 @@ jobs:
             release-assets/php-${{ needs.prepare.outputs.php-version }}-windows-${{ github.event.inputs.arch }}.zip.sha256
             release-assets/php-${{ needs.prepare.outputs.php-version }}-windows-${{ github.event.inputs.arch }}.7z
             release-assets/php-${{ needs.prepare.outputs.php-version }}-windows-${{ github.event.inputs.arch }}.7z.sha256
+            ${{ steps.split-assets.outputs.files }}
           draft: false
           prerelease: false
         env:
