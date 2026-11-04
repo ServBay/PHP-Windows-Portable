@@ -38,6 +38,9 @@ def prepare_split_release(core_artifacts, extension_artifacts, output_dir):
                     extension.setdefault(key, "")
     if not isinstance(context, dict) or set(context) != _REQUEST_KEYS:
         raise ValueError("Release context requires exactly the documented request fields")
+    # Actions serializes an unset optional build-branch output as JSON null.
+    if context["build_branch"] is None:
+        context["build_branch"] = ""
     producer = context.get("producer")
     if isinstance(producer, dict):
         # GitHub exposes run identity as decimal strings; collector records integers.

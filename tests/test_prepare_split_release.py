@@ -8,6 +8,7 @@ import shlex
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 import unittest
 from unittest import mock
 
@@ -93,6 +94,49 @@ class PrepareSplitReleaseTests(unittest.TestCase):
         self.assertEqual(http[0]["original_filename"], http[1]["original_filename"])
         self.assertNotEqual(http[0]["sha256"], http[1]["sha256"])
 
+    def test_actions_null_optional_build_branch_uses_empty_release_default(self):
+        self.context["build_branch"] = None
+        self.context["producer"].update(run_id="123", run_attempt="2")
+        result = self.run_helper()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        receipt = json.loads((self.output / "split-assets.json").read_text())
+        self.assertEqual(receipt["build_context"]["build_branch"], "")
+        self.assertEqual(len(receipt["assets"]), 7)
+        self.assertEqual(self.files_output(), [str(self.output / "split-assets.json")] +
+                         [str(self.output / asset["filename"]) for asset in receipt["assets"]])
+        for asset in receipt["assets"]:
+            original_root = (self.core if asset["role"].startswith("core-")
+                             else self.extensions / asset["source_artifact"])
+            original = (original_root / asset["source_path"]).read_bytes()
+            self.assertEqual((self.output / asset["filename"]).read_bytes(), original)
+            self.assertEqual(asset["sha256"], hashlib.sha256(original).hexdigest())
+
+    def test_explicit_empty_and_development_master_branch_are_preserved(self):
+        for branch in ("", "master", "8.4"):
+            with self.subTest(branch=branch):
+                self.context["build_branch"] = branch
+                self.github_output.write_text("existing=keep\n")
+                output = self.root / ("branch-" + (branch or "empty"))
+                result = self.run_helper(output=output)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                receipt = json.loads((output / "split-assets.json").read_text())
+                self.assertEqual(receipt["build_context"]["build_branch"], branch)
+
+    def test_invalid_non_null_branch_is_not_defaulted(self):
+        for branch in (False, 0, [], {}, " ", "master\n"):
+            with self.subTest(branch=branch):
+                self.assert_rejected({CONTEXT_ENV: json.dumps(dict(self.context, build_branch=branch))})
+
+    def test_required_context_fields_and_missing_branch_stay_required(self):
+        for key in self.context:
+            with self.subTest(missing=key):
+                context = dict(self.context)
+                del context[key]
+                self.assert_rejected({CONTEXT_ENV: json.dumps(context)})
+            if key != "build_branch":
+                with self.subTest(null=key):
+                    self.assert_rejected({CONTEXT_ENV: json.dumps(dict(self.context, **{key: None}))})
+
     def test_github_decimal_run_strings_are_recorded_as_positive_integers(self):
         self.context["producer"].update(run_id="123", run_attempt="2")
         result = self.run_helper()
@@ -134,14 +178,19 @@ class PrepareSplitReleaseTests(unittest.TestCase):
         self.extensions.rename(inputs / "extensions")
         merged = self.root / "release-assets"
         merged.mkdir()
-        (merged / "existing.zip").write_bytes(b"original-merged-bytes")
+        # The split step must not alter any of the original v1 Release assets.
+        original_assets = {"php-8.4.27.1-windows-x64" + suffix: ("original" + suffix).encode()
+                           for suffix in (".zip", ".zip.sha256", ".7z", ".7z.sha256")}
+        for name, content in original_assets.items():
+            (merged / name).write_bytes(content)
+        self.context["build_branch"] = None  # Actual Actions context for stable/testing.
         environment = dict(os.environ, **{CONTEXT_ENV: json.dumps(self.context),
             SELECTED_ENV: json.dumps(self.selected), "GITHUB_OUTPUT": str(self.github_output)})
         command = shlex.split(step["run"])
         result = subprocess.run([sys.executable] + command[1:], cwd=self.root,
                                 env=environment, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual((merged / "existing.zip").read_bytes(), b"original-merged-bytes")
+        self.assertEqual({path.name: path.read_bytes() for path in merged.iterdir()}, original_assets)
         receipt = json.loads((self.root / "split-release-assets/split-assets.json").read_text())
         self.assertEqual(len(receipt["assets"]), 7)
         self.assertEqual(self.files_output(), ["split-release-assets/split-assets.json"] +
@@ -253,6 +302,27 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.workflow = yaml.safe_load((ROOT / ".github/workflows/build.yml").read_text())
         self.release = self.workflow["jobs"]["create-release"]
         self.steps = self.release["steps"]
+
+    def test_prepare_modes_keep_release_empty_branch_and_development_master(self):
+        prepare = self.workflow["jobs"]["prepare"]
+        self.assertEqual(prepare["outputs"]["build-branch"], "${{ steps.version.outputs.build-branch }}")
+        step = next(step for step in prepare["steps"] if step.get("id") == "version")
+        for mode, branch in (("stable", ""), ("testing", ""), ("development", "master")):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
+                values = {"version_type": mode, "stable_version": "8.4.27", "testing_tag": "php-8.6.0RC5",
+                          "dev_commit": "", "dev_version": "8.6.0-dev-latest", "thread_safe": "nts", "arch": "x64"}
+                script = step["run"]
+                for key, value in values.items():
+                    script = script.replace("${{ github.event.inputs." + key + " }}", value)
+                self.assertNotIn("${{", script)
+                output = Path(directory) / "github-output"
+                result = subprocess.run(["/bin/bash", "-e", "-c", script], capture_output=True, text=True,
+                                        env=dict(os.environ, GITHUB_OUTPUT=str(output)))
+                self.assertEqual(result.returncode, 0, result.stderr)
+                actual = dict(line.split("=", 1) for line in output.read_text().splitlines())
+                self.assertEqual(actual["build-branch"], branch)
+                self.assertEqual(actual["build-version"], {"stable": "8.4.27", "testing": "8.6.0RC5",
+                                                          "development": "master"}[mode])
 
     def test_existing_release_contract_and_original_merged_files_are_preserved(self):
         self.assertEqual(self.workflow["permissions"], {"contents": "write"})
